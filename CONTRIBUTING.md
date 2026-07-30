@@ -104,7 +104,4 @@ Open a GitHub issue with:
 
 For security issues, follow [SECURITY.md](SECURITY.md) instead.
 
-## License of contributions
 
-By contributing, you agree that your contribution is licensed under
-Apache-2.0 — the same license as the rest of the repository.
