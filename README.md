@@ -355,13 +355,6 @@ general rules:
   workflows.
 - Keep provider integrations behind `llm_provider.py`.
 
-## License
-
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-Apache-2.0 was chosen because it is permissive **and** includes an
-explicit patent grant, which matters for a domain that intersects
-regulated work.
-
 ## Disclaimer
 
 Judicex is a software assistant for legal drafting, document organization
