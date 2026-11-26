@@ -586,12 +586,25 @@ async function loadAuthStatus() {
 function renderWorkflowOptions(workflowPacks) {
   if (!els.workflowPackSelect) return;
   state.workflowPacks = workflowPacks || [];
-  els.workflowPackSelect.innerHTML = workflowPacks.length
-    ? workflowPacks.map((pack) => {
+  const availableIds = new Set(state.workflowPacks.map((pack) => pack.id));
+  const preferredId = "iran_legal_matter_analysis";
+  const currentId = els.workflowPackSelect.value;
+  const selectedId = availableIds.has(currentId)
+    ? currentId
+    : availableIds.has(preferredId)
+      ? preferredId
+      : (state.workflowPacks[0]?.id || "");
+  els.workflowPackSelect.innerHTML = state.workflowPacks.length
+    ? state.workflowPacks.map((pack) => {
       const source = pack.source === "sqlite" ? " · creato" : "";
-      return `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.label || pack.id)}${escapeHtml(source)}</option>`;
+      const selected = pack.id === selectedId ? " selected" : "";
+      return `<option value="${escapeHtml(pack.id)}"${selected}>${escapeHtml(pack.label || pack.id)}${escapeHtml(source)}</option>`;
     }).join("")
     : `<option value="">Nessun workflow</option>`;
+  if (selectedId) els.workflowPackSelect.value = selectedId;
+  if (!state.pageWorkflow.selectedId || !availableIds.has(state.pageWorkflow.selectedId)) {
+    state.pageWorkflow.selectedId = selectedId;
+  }
 }
 
 function renderMatterList() {
@@ -1615,7 +1628,8 @@ function renderPageDocumentViewer() {
 
 function renderDedicatedWorkflows() {
   const packs = state.workflowPacks || [];
-  const selected = state.pageWorkflow.selectedId || els.workflowPackSelect?.value || packs[0]?.id || "";
+  const preferredId = "iran_legal_matter_analysis";
+  const selected = state.pageWorkflow.selectedId || els.workflowPackSelect?.value || (packs.some((pack) => pack.id === preferredId) ? preferredId : packs[0]?.id) || "";
   state.pageWorkflow.selectedId = selected;
   const options = packs.length
     ? packs.map((pack) => `<option value="${escapeHtml(pack.id)}" ${pack.id === selected ? "selected" : ""}>${escapeHtml(pack.label || pack.id)}${pack.source === "sqlite" ? " · creato" : ""}</option>`).join("")
