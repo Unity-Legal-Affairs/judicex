@@ -86,6 +86,24 @@ class MatterAnalysisTests(unittest.TestCase):
         self.assertEqual(by_id["notification_date"]["status"], "present")
         self.assertEqual(by_id["opposition_grounds"]["status"], "missing")
 
+    def test_iran_workflow_pack_is_available_and_selects_family_profile(self) -> None:
+        tempdir, store = self.make_store()
+        self.addCleanup(tempdir.cleanup)
+        self.addCleanup(store.close)
+
+        matter = store.create_matter("پرونده طلاق", client_name="موکل", area="خانواده")
+        result = store.analyze_matter(
+            matter["id"],
+            "دادخواست طلاق به درخواست زوجه و تعیین حضانت فرزند",
+            workflow_pack="iran_legal_matter_analysis",
+        )
+
+        self.assertEqual(result["workflow_pack"]["id"], "iran_legal_matter_analysis")
+        self.assertEqual(result["profile"]["id"], "iran_family_case")
+        requirement_ids = {item["id"] for item in result["requirements"]}
+        self.assertIn("marital_status", requirement_ids)
+        self.assertIn("family_claim", requirement_ids)
+
     def test_analysis_can_use_external_workflow_pack(self) -> None:
         tempdir, store = self.make_store()
         self.addCleanup(tempdir.cleanup)
