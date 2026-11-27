@@ -3623,7 +3623,7 @@ class LegalMemoryStore:
             # resolved against the original upload metadata.
             all_document_refs = self.search_matter_documents("", matter_id=matter_id, top_k=100)
             mentioned_filenames = re.findall(
-                r"(?i)(?<![\w])[\w().-]+\\.(?:pdf|docx|txt|md|markdown|csv|json|png|jpg|jpeg|webp|tif|tiff|bmp|gif|heic)(?![\w])",
+                r"(?i)(?<![\w])[\w().-]+\.(?:pdf|docx|txt|md|markdown|csv|json|png|jpg|jpeg|webp|tif|tiff|bmp|gif|heic)(?![\w])",
                 query,
             )
             if mentioned_filenames:
