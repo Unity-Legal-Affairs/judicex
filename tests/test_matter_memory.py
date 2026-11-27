@@ -22,6 +22,30 @@ class MatterMemoryTests(unittest.TestCase):
         store = LegalMemoryStore(Path(tempdir.name) / "memory.db")
         return tempdir, store
 
+    def test_matter_context_resolves_original_filename_and_returns_full_text(self) -> None:
+        tempdir, store = self.make_store()
+        self.addCleanup(tempdir.cleanup)
+        self.addCleanup(store.close)
+
+        matter = store.create_matter("پرونده آزمایشی", area="کیفری")
+        expected_text = "متن کامل سند آزمایشی که باید از طریق نام فایل بازیابی شود."
+        store.add_matter_document(
+            matter["id"],
+            title="test",
+            kind="document",
+            content=expected_text,
+            metadata={"original_filename": "test.txt", "text_extraction": "plain_text"},
+        )
+
+        context = store.build_matter_context(
+            matter["id"],
+            query="محتوای فایل test.txt چیست؟",
+        )
+
+        self.assertEqual(len(context["documents"]), 1)
+        self.assertEqual(context["documents"][0]["metadata"]["original_filename"], "test.txt")
+        self.assertEqual(context["documents"][0]["content"], expected_text)
+
     def test_extract_matter_facts_is_deterministic(self) -> None:
         document = MatterDocument(
             id="matterdoc:test",
