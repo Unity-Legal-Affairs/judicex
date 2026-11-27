@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>اسکن فایل‌های گوشی | دستیار وکالت رحیمی</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7fb;color:#182230;font-family:Tahoma,Arial,sans-serif;line-height:1.8}
+main{max-width:850px;margin:24px auto;padding:16px}.card{background:white;border:1px solid #e3e8ef;border-radius:14px;padding:18px;margin-bottom:14px;box-shadow:0 2px 8px #1522380a}
+h1{font-size:22px;margin:0 0 8px}h2{font-size:17px;margin:0 0 12px}.muted{color:#64748b;font-size:13px}
+input,select,button{font:inherit}input[type=text],select{width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:9px;background:white;margin:5px 0 12px}
+button{border:0;border-radius:9px;padding:10px 16px;background:#173b67;color:white;cursor:pointer;margin:4px 0}button.secondary{background:#e8eef6;color:#173b67}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.file{padding:10px 0;border-bottom:1px solid #edf0f4;display:flex;gap:10px;align-items:flex-start}.file:last-child{border:0}.file small{display:block;color:#64748b;direction:ltr;text-align:right}.status{margin-top:10px;color:#175b3a;white-space:pre-wrap}.warning{background:#fff8e7;border:1px solid #f1d69a;border-radius:10px;padding:12px;font-size:13px}
+</style></head>
+<body><main>
+<section class="card">
+<h1>دستیار وکالت رحیمی | اسکن فایل‌های گوشی</h1>
+<p class="muted">این بخش فقط فایل‌های پوشه انتخاب‌شده را فهرست می‌کند. هیچ فایلی حذف یا جابه‌جا نمی‌شود.</p>
+<div class="warning">برای حفظ محرمانگی، ابتدا فقط پوشه آزمایشی را بررسی کنید. فایل‌ها پس از انتخاب شما به پرونده انتخابی وارد می‌شوند.</div>
+</section>
+<section class="card">
+<h2>۱. انتخاب پوشه برای بررسی</h2>
+<label for="directory">مسیر نسبت به حافظه مشترک گوشی</label>
+<input id="directory" type="text" value="Download/Judicex_Test" dir="ltr">
+<div class="row"><button id="scan">اسکن پوشه</button><button class="secondary" id="all">انتخاب همه</button><button class="secondary" id="none">لغو انتخاب</button></div>
+<div id="scanStatus" class="status"></div>
+</section>
+<section class="card">
+<h2>۲. انتخاب پرونده مقصد</h2>
+<select id="matter"><option value="">در حال دریافت پرونده‌ها...</option></select>
+<h2>۳. فایل‌های شناسایی‌شده</h2>
+<div id="files" class="muted">هنوز اسکن انجام نشده است.</div>
+<div class="row"><button id="import">ورود فایل‌های انتخاب‌شده به پرونده</button><a href="/" style="color:#173b67">بازگشت به برنامه</a></div>
+<div id="importStatus" class="status"></div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let scanned=[];
+async function api(url,options){const r=await fetch(url,{...options,headers:options?.body?{"Content-Type":"application/json"}:{}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"خطای ارتباط");return d}
+function fmt(n){return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB"}
+async function loadMatters(){try{const d=await api("/api/state");const items=d.matters||[];$("matter").innerHTML='<option value="">انتخاب پرونده</option>'+items.map(m=>'<option value="'+String(m.id).replaceAll('"','&quot;')+'">'+String(m.title||m.client_name||m.id).replaceAll("<","&lt;")+'</option>').join("")}catch(e){$("matter").innerHTML='<option value="">خطا در دریافت پرونده‌ها</option>'}}
+async function scan(){ $("scanStatus").textContent="در حال بررسی پوشه...";$("files").textContent="";try{const q=new URLSearchParams({directory:$("directory").value.trim()});const d=await api("/api/device-files/scan?"+q);scanned=d.files||[];$("scanStatus").textContent="تعداد فایل‌های قابل بررسی: "+d.count+"؛ موارد ردشده: "+d.skipped;$("files").innerHTML=scanned.length?scanned.map((f,i)=>'<label class="file"><input type="checkbox" class="pick" data-index="'+i+'" checked><span>'+f.name.replaceAll("<","&lt;")+'<small>'+f.path+' · '+fmt(f.size)+'</small></span></label>').join(""):"فایل مجازی با قالب پشتیبانی‌شده در این پوشه پیدا نشد."}catch(e){$("scanStatus").textContent="خطا: "+e.message}}
+$("scan").addEventListener("click",scan);
+$("all").addEventListener("click",()=>document.querySelectorAll(".pick").forEach(x=>x.checked=true));
+$("none").addEventListener("click",()=>document.querySelectorAll(".pick").forEach(x=>x.checked=false));
+$("import").addEventListener("click",async()=>{const matter_id=$("matter").value;const paths=[...document.querySelectorAll(".pick:checked")].map(x=>scanned[Number(x.dataset.index)].path);if(!matter_id){$("importStatus").textContent="ابتدا پرونده مقصد را انتخاب کنید.";return}if(!paths.length){$("importStatus").textContent="حداقل یک فایل را انتخاب کنید.";return}if(!confirm("فقط فایل‌های انتخاب‌شده به پرونده وارد شوند؟"))return;$("importStatus").textContent="در حال ورود فایل‌ها...";try{const d=await api("/api/device-files/import",{method:"POST",body:JSON.stringify({matter_id,paths})});$("importStatus").textContent=(d.imports||[]).map(x=>(x.status==="ok"?"موفق: ":"ناموفق: ")+x.path+(x.error?" — "+x.error:"")).join("\n")}catch(e){$("importStatus").textContent="خطا: "+e.message}});
+loadMatters();
+</script></body></html>
