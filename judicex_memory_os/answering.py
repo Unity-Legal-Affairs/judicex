@@ -718,6 +718,11 @@ class GroundedAnswerEngine:
 
             Hai a disposizione un pacchetto di fonti (evidence_documents_primary) contenente articoli ufficiali con il loro testo. La user_message può contenere anche fatti del caso (importi, date, residenza, tipo di credito): sono input legittimi per il tuo ragionamento, non servono altre fonti per usarli. Se sono presenti legal_issues, issue_coverage e answer_contract, usali come piano di risposta: tratta ogni questione coperta e non rispondere a questioni prive di fonti pertinenti.
 
+            REGOLA SUI DOCUMENTI PRIVATI DEL FASCICOLO:
+            - I documenti elencati in matter_context.documents sono testi privati caricati nel fascicolo. Quando l'utente chiede il contenuto, il riassunto o l'analisi di uno di essi, usa il campo content se presente e rispondi sul documento effettivamente recuperato.
+            - Non fingere di aver letto un documento se il testo non è presente. Se il documento non è stato trovato o il testo non è estraibile, dichiaralo chiaramente e chiedi il file corretto o OCR.
+            - I documenti privati sono prove/fatti del fascicolo, non fonti normative ufficiali: non usarli come autorità giuridica e non inventare citazioni di legge sulla loro base.
+
             Devi scegliere uno stato e produrre output JSON.
             - "chat": small talk, domande non giuridiche, domande sul sistema
             - "operational": risposta operativa che serve soprattutto a raccogliere dati, ordinare il lavoro,
@@ -944,11 +949,20 @@ class GroundedAnswerEngine:
 
     @staticmethod
     def _slim_matter_document(doc: dict[str, Any]) -> dict[str, Any]:
-        excerpt = str(doc.get("excerpt") or doc.get("content") or "").strip().replace("\n", " ")
+        metadata = doc.get("metadata") or {}
+        has_full_content = bool(doc.get("content"))
+        raw_content = str(doc.get("content") or doc.get("excerpt") or "").strip()
+        max_chars = 12000 if has_full_content else 900
+        content = raw_content[:max_chars]
+        truncated = len(raw_content) > max_chars
+        excerpt = content.replace("\n", " ")
         return {
             "id": doc.get("id", ""),
             "title": doc.get("title", ""),
+            "filename": str(metadata.get("original_filename") or metadata.get("uploaded_filename") or ""),
             "kind": doc.get("kind", ""),
+            "content": content + ("..." if truncated else ""),
+            "content_truncated": truncated,
             "excerpt": excerpt[:900] + ("..." if len(excerpt) > 900 else ""),
         }
 
