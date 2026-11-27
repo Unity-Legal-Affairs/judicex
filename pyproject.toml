@@ -20,6 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+server = [
+    "gunicorn>=22,<24",
+]
 crypto = [
     "cryptography>=42,<46",
 ]
