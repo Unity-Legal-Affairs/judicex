@@ -9,6 +9,7 @@ import difflib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .atomizer import compile_document_atoms, document_version_id
 from .matter_analysis import analyze_matter_context, list_builtin_workflow_packs, load_workflow_pack
@@ -154,6 +155,24 @@ class LegalMemoryStore:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS matter_tasks (
+                id TEXT PRIMARY KEY,
+                matter_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                task_type TEXT NOT NULL DEFAULT 'task',
+                due_date TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL DEFAULT 'normal',
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (matter_id) REFERENCES matters(id) ON DELETE CASCADE
             )
             """
         )
@@ -479,6 +498,9 @@ class LegalMemoryStore:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_atoms_area ON legal_atoms(area)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_atoms_type ON legal_atoms(atom_type)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_atoms_action ON legal_atoms(action)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_matter_tasks_matter ON matter_tasks(matter_id)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_matter_tasks_due ON matter_tasks(due_date)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_matter_tasks_status ON matter_tasks(status)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_matters_area ON matters(area)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_matters_status ON matters(status)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_matter_documents_matter ON matter_documents(matter_id)")
@@ -1619,6 +1641,151 @@ class LegalMemoryStore:
             (like, like, like, like, top_k),
         ).fetchall()
         return [self._matter_row_to_dict(row) for row in rows]
+
+    def _matter_task_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = {
+            "id": row["id"],
+            "matter_id": row["matter_id"],
+            "matter_title": row["matter_title"] if "matter_title" in row.keys() else "",
+            "client_name": row["client_name"] if "client_name" in row.keys() else "",
+            "title": row["title"],
+            "description": row["description"],
+            "task_type": row["task_type"],
+            "due_date": row["due_date"],
+            "priority": row["priority"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "completed_at": row["completed_at"],
+        }
+        return payload
+
+    def create_matter_task(
+        self,
+        matter_id: str,
+        title: str,
+        *,
+        description: str = "",
+        task_type: str = "task",
+        due_date: str = "",
+        priority: str = "normal",
+        status: str = "open",
+    ) -> dict[str, Any]:
+        matter_id = matter_id.strip()
+        title = title.strip()
+        if not matter_id or self.get_matter(matter_id) is None:
+            raise ValueError("فاشیولیو برای این اقدام پیدا نشد.")
+        if not title:
+            raise ValueError("عنوان اقدام الزامی است.")
+        if due_date:
+            try:
+                datetime.strptime(due_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("تاریخ سررسید باید به قالب YYYY-MM-DD باشد.") from exc
+        if task_type not in {"task", "deadline", "hearing", "meeting"}:
+            raise ValueError("نوع اقدام معتبر نیست.")
+        if priority not in {"low", "normal", "high", "urgent"}:
+            raise ValueError("اولویت معتبر نیست.")
+        if status not in {"open", "in_progress", "done", "cancelled"}:
+            raise ValueError("وضعیت معتبر نیست.")
+        now = datetime.now(timezone.utc).isoformat()
+        task_id = f"task_{uuid4().hex}"
+        completed_at = now if status == "done" else ""
+        self.conn.execute(
+            """
+            INSERT INTO matter_tasks (
+                id, matter_id, title, description, task_type, due_date,
+                priority, status, created_at, updated_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, matter_id, title, description.strip(), task_type, due_date, priority, status, now, now, completed_at),
+        )
+        self.conn.commit()
+        task = self.get_matter_task(task_id)
+        if task is None:
+            raise RuntimeError("اقدام ذخیره نشد.")
+        return task
+
+    def get_matter_task(self, task_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT t.*, m.title AS matter_title, m.client_name AS client_name
+            FROM matter_tasks t JOIN matters m ON m.id = t.matter_id
+            WHERE t.id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        return self._matter_task_row_to_dict(row) if row else None
+
+    def list_matter_tasks(
+        self,
+        *,
+        matter_id: str | None = None,
+        status: str | None = None,
+        top_k: int = 200,
+    ) -> list[dict[str, Any]]:
+        top_k = self._normalize_limit(top_k, max_value=500)
+        clauses: list[str] = []
+        params: list[Any] = []
+        if matter_id:
+            clauses.append("t.matter_id = ?")
+            params.append(matter_id)
+        if status:
+            clauses.append("t.status = ?")
+            params.append(status)
+        sql = """
+            SELECT t.*, m.title AS matter_title, m.client_name AS client_name
+            FROM matter_tasks t JOIN matters m ON m.id = t.matter_id
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY CASE WHEN t.due_date = '' THEN 1 ELSE 0 END, t.due_date, t.created_at DESC LIMIT ?"
+        params.append(top_k)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [self._matter_task_row_to_dict(row) for row in rows]
+
+    def update_matter_task(self, task_id: str, **changes: Any) -> dict[str, Any] | None:
+        current = self.get_matter_task(task_id)
+        if current is None:
+            return None
+        allowed = {"title", "description", "task_type", "due_date", "priority", "status"}
+        values = {key: value for key, value in changes.items() if key in allowed and value is not None}
+        if "title" in values:
+            values["title"] = str(values["title"]).strip()
+            if not values["title"]:
+                raise ValueError("عنوان اقدام الزامی است.")
+        if "due_date" in values and values["due_date"]:
+            try:
+                datetime.strptime(str(values["due_date"]), "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("تاریخ سررسید باید به قالب YYYY-MM-DD باشد.") from exc
+        choices = {
+            "task_type": {"task", "deadline", "hearing", "meeting"},
+            "priority": {"low", "normal", "high", "urgent"},
+            "status": {"open", "in_progress", "done", "cancelled"},
+        }
+        for key, allowed_values in choices.items():
+            if key in values and values[key] not in allowed_values:
+                raise ValueError(f"{key} مقدار معتبری ندارد.")
+        if not values:
+            return current
+        values["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if values.get("status") == "done":
+            values["completed_at"] = values["updated_at"]
+        elif values.get("status") in {"open", "in_progress"}:
+            values["completed_at"] = ""
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        self.conn.execute(
+            f"UPDATE matter_tasks SET {assignments} WHERE id = ?",
+            (*values.values(), task_id),
+        )
+        self.conn.commit()
+        return self.get_matter_task(task_id)
+
+    def delete_matter_task(self, task_id: str) -> bool:
+        cursor = self.conn.execute("DELETE FROM matter_tasks WHERE id = ?", (task_id,))
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def delete_matter(self, matter_id: str) -> bool:
         matter_id = matter_id.strip()
