@@ -14,13 +14,13 @@ button{border:0;border-radius:9px;padding:10px 16px;background:#173b67;color:whi
 <body><main>
 <section class="card">
 <h1>دستیار وکالت رحیمی | اسکن فایل‌های گوشی</h1>
-<p class="muted">این بخش فقط فایل‌های پوشه انتخاب‌شده را فهرست می‌کند. هیچ فایلی حذف یا جابه‌جا نمی‌شود.</p>
-<div class="warning">برای حفظ محرمانگی، ابتدا فقط پوشه آزمایشی را بررسی کنید. فایل‌ها پس از انتخاب شما به پرونده انتخابی وارد می‌شوند.</div>
+<p class="muted">این بخش پوشه‌های Download، Documents، DCIM، Pictures و Telegram را بررسی می‌کند. هیچ فایلی حذف یا جابه‌جا نمی‌شود.</p>
+<div class="warning">فقط فایل‌های پشتیبانی‌شده تا سقف ۵۰ مگابایت شناسایی می‌شوند. هیچ فایلی بدون انتخاب و تأیید شما وارد پرونده نمی‌شود و فایل اصلی گوشی دست‌نخورده می‌ماند.</div>
 </section>
 <section class="card">
 <h2>۱. انتخاب پوشه برای بررسی</h2>
-<label for="directory">مسیر نسبت به حافظه مشترک گوشی</label>
-<input id="directory" type="text" value="Download/Judicex_Test" dir="ltr">
+<label for="directory">پوشه مورد بررسی (ALL_COMMON یعنی همه پوشه‌های اصلی)</label>
+<input id="directory" type="text" value="ALL_COMMON" dir="ltr">
 <div class="row"><button id="scan">اسکن پوشه</button><button class="secondary" id="all">انتخاب همه</button><button class="secondary" id="none">لغو انتخاب</button></div>
 <div id="scanStatus" class="status"></div>
 </section>
