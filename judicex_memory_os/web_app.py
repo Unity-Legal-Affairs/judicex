@@ -128,37 +128,48 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
 
     @app.get("/api/device-files/scan")
     def api_device_files_scan():
-        relative_dir = str(request.args.get("directory", "Download/Judicex_Test")).strip()
+        relative_dir = str(request.args.get("directory", "ALL_COMMON")).strip() or "ALL_COMMON"
         try:
-            base = _device_safe_path(relative_dir)
-            if not base.is_dir():
-                return _error("مسیر انتخاب‌شده پوشه نیست.", status=400)
+            root = _device_shared_root()
+            if relative_dir.upper() == "ALL_COMMON":
+                scan_roots = [root / name for name in ("Download", "Documents", "DCIM", "Pictures", "Telegram")]
+                scan_roots = [item for item in scan_roots if item.is_dir() and not item.is_symlink()]
+                if not scan_roots:
+                    return _error("هیچ‌یک از پوشه‌های اصلی حافظه در دسترس نیست.", status=400)
+            else:
+                base = _device_safe_path(relative_dir)
+                if not base.is_dir():
+                    return _error("مسیر انتخاب‌شده پوشه نیست.", status=400)
+                scan_roots = [base]
             allowed = {".pdf", ".docx", ".txt", ".md", ".csv", ".json", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
             results = []
             skipped = 0
-            for current, dirs, files in os.walk(base, followlinks=False):
-                current_path = Path(current)
-                dirs[:] = [name for name in dirs if not name.startswith(".") and not (current_path / name).is_symlink()]
-                try:
-                    depth = len(current_path.relative_to(base).parts)
-                except ValueError:
-                    continue
-                if depth >= 4:
-                    dirs[:] = []
-                for name in files:
-                    file_path = current_path / name
-                    if name.startswith(".") or file_path.is_symlink() or file_path.suffix.lower() not in allowed:
-                        skipped += 1
-                        continue
+            for base in scan_roots:
+                for current, dirs, files in os.walk(base, followlinks=False):
+                    current_path = Path(current)
+                    dirs[:] = [name for name in dirs if not name.startswith(".") and not (current_path / name).is_symlink()]
                     try:
-                        stat = file_path.stat()
-                        if not file_path.is_file() or stat.st_size > 50 * 1024 * 1024:
+                        depth = len(current_path.relative_to(base).parts)
+                    except ValueError:
+                        continue
+                    if depth >= 5:
+                        dirs[:] = []
+                    for name in files:
+                        file_path = current_path / name
+                        if name.startswith(".") or file_path.is_symlink() or file_path.suffix.lower() not in allowed:
                             skipped += 1
                             continue
-                        relative = file_path.relative_to(_device_shared_root()).as_posix()
-                        results.append({"path": relative, "name": name, "extension": file_path.suffix.lower(), "size": stat.st_size})
-                    except OSError:
-                        skipped += 1
+                        try:
+                            stat = file_path.stat()
+                            if not file_path.is_file() or stat.st_size > 50 * 1024 * 1024:
+                                skipped += 1
+                                continue
+                            relative = file_path.relative_to(root).as_posix()
+                            results.append({"path": relative, "name": name, "extension": file_path.suffix.lower(), "size": stat.st_size})
+                        except OSError:
+                            skipped += 1
+                        if len(results) >= 300:
+                            break
                     if len(results) >= 300:
                         break
                 if len(results) >= 300:
