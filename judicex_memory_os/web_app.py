@@ -172,8 +172,12 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
         payload = _json_payload()
         matter_id = str(payload.get("matter_id", "")).strip()
         paths = payload.get("paths", [])
+        kinds = payload.get("kinds", {})
         if not isinstance(paths, list) or not paths or len(paths) > 50:
             return _error("حداکثر ۵۰ فایل را برای ورود انتخاب کنید.", status=400)
+        if not isinstance(kinds, dict):
+            kinds = {}
+        allowed_kinds = {"document", "contract", "court_decision", "petition", "evidence", "correspondence", "identity", "other"}
         imported = []
         with store() as memory:
             if memory.get_matter(matter_id) is None:
@@ -183,12 +187,23 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
                     file_path = _device_safe_path(str(relative))
                     if not file_path.is_file() or file_path.stat().st_size > 50 * 1024 * 1024:
                         raise ValueError("فایل معتبر نیست یا از حد ۵۰ مگابایت بیشتر است.")
+                    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    duplicate = memory.conn.execute(
+                        "SELECT id, title FROM matter_documents WHERE matter_id = ? AND metadata_json LIKE ? LIMIT 1",
+                        (matter_id, f"%{digest}%"),
+                    ).fetchone()
+                    if duplicate:
+                        imported.append({"path": str(relative), "status": "duplicate", "document_id": duplicate["id"], "title": duplicate["title"]})
+                        continue
+                    selected_kind = str(kinds.get(str(relative), "document")).strip()
+                    if selected_kind not in allowed_kinds:
+                        selected_kind = "document"
                     result = memory.add_matter_document_file(
                         matter_id,
                         file_path,
                         title=file_path.stem or file_path.name,
-                        kind="device_import",
-                        metadata={"source": "android_shared_storage", "relative_path": str(relative)},
+                        kind=selected_kind,
+                        metadata={"source": "android_shared_storage", "relative_path": str(relative), "classification": selected_kind},
                     )
                     imported.append({"path": str(relative), "status": "ok", **result})
                 except Exception as exc:
