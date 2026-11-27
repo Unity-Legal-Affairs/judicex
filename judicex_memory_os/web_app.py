@@ -2058,7 +2058,7 @@ def _extract_ocr_text(
     *,
     max_pdf_pages: int = 20,
 ) -> dict[str, Any]:
-    """Extract document text without sending files to a remote service."""
+    """Extract document text locally; never send document contents to a remote service."""
     if source_path is None:
         return {"status": "no_source_file", "text": document.get("content", ""), "engine": "stored_text"}
 
@@ -2068,11 +2068,18 @@ def _extract_ocr_text(
             from pypdf import PdfReader
 
             reader = PdfReader(str(source_path))
-            text_chunks = [(page.extract_text() or "").strip() for page in reader.pages]
-            text = "\n\n".join(chunk for chunk in text_chunks if chunk)
-            if text:
-                return {"status": "extracted", "text": text, "engine": "pypdf", "pages": len(reader.pages)}
-            return _ocr_pdf_with_tesseract(source_path, max_pages=max_pdf_pages, page_count=len(reader.pages))
+            extracted_pages = [(page.extract_text() or "").strip() for page in reader.pages]
+            if any(extracted_pages):
+                # Preserve selectable text and OCR only scanned/empty pages in mixed PDFs.
+                return _ocr_pdf_with_tesseract(
+                    source_path,
+                    max_pages=max_pdf_pages,
+                    page_count=len(reader.pages),
+                    extracted_pages=extracted_pages,
+                )
+            return _ocr_pdf_with_tesseract(
+                source_path, max_pages=max_pdf_pages, page_count=len(reader.pages)
+            )
         except Exception as exc:
             return {"status": "error", "text": "", "engine": "pypdf", "error": str(exc)}
 
@@ -2139,35 +2146,57 @@ def _ocr_pdf_with_tesseract(
     *,
     max_pages: int,
     page_count: int,
+    extracted_pages: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Render scanned PDF pages with Poppler and OCR them locally with Tesseract."""
+    """Render only scanned PDF pages with Poppler and OCR them locally with Tesseract."""
     renderer = shutil.which("pdftoppm")
     if not renderer:
         return {
             "status": "ocr_engine_missing",
             "text": "",
-            "engine": "tesseract",
+            "engine": "poppler+tesseract",
             "pages": page_count,
             "note": "ابزار pdftoppm از بسته Poppler نصب نیست. هیچ داده‌ای ارسال نشده است.",
         }
 
-    page_texts: list[str] = []
+    tesseract = shutil.which("tesseract")
+    if not tesseract:
+        return {
+            "status": "ocr_engine_missing",
+            "text": "",
+            "engine": "tesseract",
+            "pages": page_count,
+            "note": "Tesseract نصب نیست. هیچ داده‌ای ارسال نشده است.",
+        }
+    languages, language_error = _tesseract_languages(tesseract)
+    if not languages:
+        return {
+            "status": "ocr_language_missing",
+            "text": "",
+            "engine": "tesseract",
+            "pages": page_count,
+            "note": language_error or "داده زبان فارسی نصب نیست.",
+        }
+
     limit = max(1, min(_safe_positive_int(max_pages, default=20), page_count))
+    page_texts: list[str] = []
+    processed_pages = 0
     try:
         with tempfile.TemporaryDirectory(prefix="judicex_ocr_") as temp_dir:
             for index in range(limit):
+                existing_text = extracted_pages[index] if extracted_pages and index < len(extracted_pages) else ""
+                if existing_text:
+                    page_texts.append(f"[صفحه {index + 1}]\n{existing_text}")
+                    processed_pages += 1
+                    continue
+
                 output_prefix = Path(temp_dir) / f"page_{index + 1}"
                 try:
                     proc = subprocess.run(
                         [
-                            renderer,
-                            "-f", str(index + 1),
-                            "-l", str(index + 1),
-                            "-r", "200",
-                            "-singlefile",
-                            "-png",
-                            str(source_path),
-                            str(output_prefix),
+                            renderer, "-f", str(index + 1), "-l", str(index + 1),
+                            "-r", "200", "-singlefile", "-png",
+                            str(source_path), str(output_prefix),
                         ],
                         check=False,
                         capture_output=True,
@@ -2176,20 +2205,20 @@ def _ocr_pdf_with_tesseract(
                 except subprocess.TimeoutExpired:
                     return {
                         "status": "error",
-                        "text": "\\n\\n".join(page_texts),
-                        "engine": "tesseract",
+                        "text": "\n\n".join(page_texts),
+                        "engine": "poppler+tesseract",
                         "pages": page_count,
-                        "processed_pages": index,
+                        "processed_pages": processed_pages,
                         "error": f"تبدیل صفحه {index + 1} بیش از حد طول کشید.",
                     }
                 if proc.returncode != 0:
                     detail = proc.stderr.decode("utf-8", "replace").strip()
                     return {
                         "status": "error",
-                        "text": "\\n\\n".join(page_texts),
+                        "text": "\n\n".join(page_texts),
                         "engine": "poppler+tesseract",
                         "pages": page_count,
-                        "processed_pages": index,
+                        "processed_pages": processed_pages,
                         "error": detail or f"تبدیل صفحه {index + 1} به تصویر ناموفق بود.",
                     }
 
@@ -2197,44 +2226,47 @@ def _ocr_pdf_with_tesseract(
                 if not image_path.is_file():
                     return {
                         "status": "error",
-                        "text": "\\n\\n".join(page_texts),
+                        "text": "\n\n".join(page_texts),
                         "engine": "poppler+tesseract",
                         "pages": page_count,
-                        "processed_pages": index,
+                        "processed_pages": processed_pages,
                         "error": f"تصویر صفحه {index + 1} ساخته نشد.",
                     }
 
                 result = _ocr_image_with_tesseract(image_path)
+                processed_pages += 1
                 if result.get("text"):
-                    page_texts.append(f"[صفحه {index + 1}]\\n{result['text']}")
+                    page_texts.append(f"[صفحه {index + 1}]\n{result['text']}")
                 elif result.get("status") != "ocr_empty":
                     return {
                         **result,
                         "pages": page_count,
-                        "processed_pages": index + 1,
-                        "text": "\\n\\n".join(page_texts),
+                        "processed_pages": processed_pages,
+                        "text": "\n\n".join(page_texts),
                     }
     except Exception as exc:
         return {
             "status": "error",
-            "text": "\\n\\n".join(page_texts),
+            "text": "\n\n".join(page_texts),
             "engine": "poppler+tesseract",
             "pages": page_count,
+            "processed_pages": processed_pages,
             "error": str(exc),
         }
 
-    text = "\\n\\n".join(page_texts).strip()
+    text = "\n\n".join(page_texts).strip()
     result: dict[str, Any] = {
         "status": "ocr_done" if text else "ocr_empty",
         "text": text,
-        "engine": "poppler+tesseract",
+        "engine": "pypdf+poppler+tesseract" if extracted_pages else "poppler+tesseract",
         "pages": page_count,
         "processed_pages": limit,
-        "languages": "fas+eng",
+        "languages": languages,
     }
     if limit < page_count:
         result["note"] = f"فقط {limit} صفحه از {page_count} صفحه پردازش شد."
     return result
+
 
 def _clean_ocr_output(text: str) -> str:
     value = str(text or "").strip()
