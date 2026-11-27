@@ -106,6 +106,94 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
             ollama_host=app.config["JUDICEX_OLLAMA_HOST"],
         )
 
+    @app.get("/device-files")
+    def device_files_page():
+        return render_template("device_files.html")
+
+    def _device_shared_root() -> Path:
+        return (Path.home() / "storage" / "shared").resolve()
+
+    def _device_safe_path(relative_path: str) -> Path:
+        root = _device_shared_root()
+        candidate = root / str(relative_path or "").strip()
+        if candidate.is_symlink():
+            raise ValueError("پیوند نمادین مجاز نیست.")
+        resolved = candidate.resolve(strict=True)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("مسیر خارج از حافظه مشترک مجاز نیست.") from exc
+        return resolved
+
+    @app.get("/api/device-files/scan")
+    def api_device_files_scan():
+        relative_dir = str(request.args.get("directory", "Download/Judicex_Test")).strip()
+        try:
+            base = _device_safe_path(relative_dir)
+            if not base.is_dir():
+                return _error("مسیر انتخاب‌شده پوشه نیست.", status=400)
+            allowed = {".pdf", ".docx", ".txt", ".md", ".csv", ".json", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
+            results = []
+            skipped = 0
+            for current, dirs, files in os.walk(base, followlinks=False):
+                current_path = Path(current)
+                dirs[:] = [name for name in dirs if not name.startswith(".") and not (current_path / name).is_symlink()]
+                try:
+                    depth = len(current_path.relative_to(base).parts)
+                except ValueError:
+                    continue
+                if depth >= 4:
+                    dirs[:] = []
+                for name in files:
+                    file_path = current_path / name
+                    if name.startswith(".") or file_path.is_symlink() or file_path.suffix.lower() not in allowed:
+                        skipped += 1
+                        continue
+                    try:
+                        stat = file_path.stat()
+                        if not file_path.is_file() or stat.st_size > 50 * 1024 * 1024:
+                            skipped += 1
+                            continue
+                        relative = file_path.relative_to(_device_shared_root()).as_posix()
+                        results.append({"path": relative, "name": name, "extension": file_path.suffix.lower(), "size": stat.st_size})
+                    except OSError:
+                        skipped += 1
+                    if len(results) >= 300:
+                        break
+                if len(results) >= 300:
+                    break
+            return jsonify({"directory": relative_dir, "files": results, "count": len(results), "skipped": skipped, "read_only": True})
+        except (OSError, ValueError) as exc:
+            return _error(str(exc), status=400)
+
+    @app.post("/api/device-files/import")
+    def api_device_files_import():
+        payload = _json_payload()
+        matter_id = str(payload.get("matter_id", "")).strip()
+        paths = payload.get("paths", [])
+        if not isinstance(paths, list) or not paths or len(paths) > 50:
+            return _error("حداکثر ۵۰ فایل را برای ورود انتخاب کنید.", status=400)
+        imported = []
+        with store() as memory:
+            if memory.get_matter(matter_id) is None:
+                return _error("ابتدا یک پرونده معتبر انتخاب کنید.", status=400)
+            for relative in paths:
+                try:
+                    file_path = _device_safe_path(str(relative))
+                    if not file_path.is_file() or file_path.stat().st_size > 50 * 1024 * 1024:
+                        raise ValueError("فایل معتبر نیست یا از حد ۵۰ مگابایت بیشتر است.")
+                    result = memory.add_matter_document_file(
+                        matter_id,
+                        file_path,
+                        title=file_path.stem or file_path.name,
+                        kind="device_import",
+                        metadata={"source": "android_shared_storage", "relative_path": str(relative)},
+                    )
+                    imported.append({"path": str(relative), "status": "ok", **result})
+                except Exception as exc:
+                    imported.append({"path": str(relative), "status": "error", "error": str(exc)})
+            return jsonify({"imports": imported, "health": memory.health()})
+
     @app.get("/api/state")
     def api_state():
         with store() as memory:
