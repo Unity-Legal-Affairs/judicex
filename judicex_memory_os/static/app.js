@@ -1,6 +1,7 @@
 const appEl = document.getElementById("app");
 const state = {
   matters: [],
+  tasks: [],
   activeMatterId: "",
   defaults: {},
   health: {},
@@ -270,6 +271,11 @@ const viewConfig = {
     path: "/matters",
     title: "Fascicoli",
     subtitle: "Selezione e creazione fascicoli.",
+  },
+  tasks: {
+    path: "/tasks",
+    title: "اقدامات و مهلت‌ها",
+    subtitle: "ثبت جلسات، مهلت‌های قانونی و اقدامات هر پرونده؛ پیگیری وضعیت و سررسیدها.",
   },
 };
 
@@ -545,6 +551,7 @@ async function persistChatMessage(role, content, metadata = {}) {
 async function loadState() {
   const payload = await api("/api/state");
   state.matters = payload.matters || [];
+  state.tasks = payload.tasks || [];
   state.defaults = payload.defaults || {};
   state.health = payload.health || {};
   state.llmSettings = payload.llm || null;
@@ -1419,6 +1426,7 @@ function renderDedicatedView(view = state.currentView) {
     security: renderDedicatedSecurity,
     backup: renderDedicatedBackup,
     matters: renderDedicatedMatters,
+    tasks: renderDedicatedTasks,
   };
   els.pageContent.innerHTML = (renderers[view] || renderDedicatedDashboard)();
 }
@@ -2167,6 +2175,83 @@ function renderDedicatedProviderSettings() {
   `;
 }
 
+function renderDedicatedTasks() {
+  const matters = state.matters || [];
+  const selectedMatterId = state.activeMatterId || matters[0]?.id || "";
+  const matterOptions = matters.map((matter) =>
+    `<option value="${escapeHtml(matter.id)}" ${matter.id === selectedMatterId ? "selected" : ""}>${escapeHtml(matter.title)} — ${escapeHtml(matter.client_name || "بدون نام موکل")}</option>`
+  ).join("");
+  const tasks = state.tasks || [];
+  const taskCards = tasks.length ? tasks.map((task) => {
+    const statusLabels = {open: "باز", in_progress: "در حال انجام", done: "انجام‌شده", cancelled: "لغوشده"};
+    const typeLabels = {task: "اقدام", deadline: "مهلت قانونی", hearing: "جلسه دادگاه", meeting: "جلسه"};
+    const priorityLabels = {low: "کم", normal: "عادی", high: "زیاد", urgent: "فوری"};
+    const done = task.status === "done" || task.status === "cancelled";
+    return `
+      <article class="rounded-md border border-line bg-white p-4">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold text-ink ${done ? "line-through text-gray-400" : ""}">${escapeHtml(task.title)}</div>
+            <div class="mt-1 text-xs text-gray-500">${escapeHtml(task.matter_title || "پرونده نامشخص")} · ${escapeHtml(task.client_name || "موکل ثبت‌نشده")}</div>
+          </div>
+          <span class="rounded-full border border-line px-2 py-1 text-[11px] text-gray-500">${escapeHtml(statusLabels[task.status] || task.status)}</span>
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2 text-xs text-gray-600">
+          <span class="rounded bg-gray-50 px-2 py-1">${escapeHtml(typeLabels[task.task_type] || task.task_type)}</span>
+          <span class="rounded bg-gray-50 px-2 py-1">سررسید: ${escapeHtml(task.due_date || "تعیین نشده")}</span>
+          <span class="rounded bg-gray-50 px-2 py-1">اولویت: ${escapeHtml(priorityLabels[task.priority] || task.priority)}</span>
+        </div>
+        ${task.description ? `<p class="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-600">${escapeHtml(task.description)}</p>` : ""}
+        <div class="mt-3 flex flex-wrap gap-2 border-t border-line pt-3">
+          ${task.status !== "done" ? `<button data-page-action="update-task-status" data-task-id="${escapeHtml(task.id)}" data-status="done" class="h-8 rounded-md bg-ink px-3 text-xs text-white" type="button">ثبت انجام</button>` : `<button data-page-action="update-task-status" data-task-id="${escapeHtml(task.id)}" data-status="open" class="h-8 rounded-md border border-line px-3 text-xs text-gray-700" type="button">بازگشایی</button>`}
+          <button data-page-action="delete-task" data-task-id="${escapeHtml(task.id)}" class="h-8 rounded-md px-3 text-xs text-gray-500 hover:bg-gray-100" type="button">حذف</button>
+        </div>
+      </article>
+    `;
+  }).join("") : pageEmpty("هنوز اقدام یا مهلتی ثبت نشده است.");
+  return `
+    <div class="space-y-4">
+      ${pageSection("ثبت اقدام، جلسه یا مهلت", matters.length ? `
+        <div class="grid gap-3 md:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-xs text-gray-500" for="pageTaskMatter">پرونده مرتبط</label>
+            <select id="pageTaskMatter" class="h-10 w-full rounded-md border border-line bg-white px-3 text-sm">${matterOptions}</select>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-gray-500" for="pageTaskTitle">عنوان</label>
+            <input id="pageTaskTitle" class="h-10 w-full rounded-md border border-line px-3 text-sm" placeholder="مثلاً مهلت تجدیدنظرخواهی">
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-gray-500" for="pageTaskType">نوع</label>
+            <select id="pageTaskType" class="h-10 w-full rounded-md border border-line bg-white px-3 text-sm">
+              <option value="task">اقدام</option><option value="deadline">مهلت قانونی</option><option value="hearing">جلسه دادگاه</option><option value="meeting">جلسه با موکل</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-gray-500" for="pageTaskDue">تاریخ سررسید</label>
+            <input id="pageTaskDue" type="date" class="h-10 w-full rounded-md border border-line px-3 text-sm">
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-gray-500" for="pageTaskPriority">اولویت</label>
+            <select id="pageTaskPriority" class="h-10 w-full rounded-md border border-line bg-white px-3 text-sm">
+              <option value="normal">عادی</option><option value="low">کم</option><option value="high">زیاد</option><option value="urgent">فوری</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-gray-500" for="pageTaskDescription">توضیحات</label>
+            <textarea id="pageTaskDescription" rows="2" class="w-full rounded-md border border-line p-2 text-sm" placeholder="جزئیات، شماره شعبه یا اقدام لازم"></textarea>
+          </div>
+        </div>
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <button data-page-action="create-task" class="h-9 rounded-md bg-ink px-4 text-sm font-medium text-white" type="button">ثبت اقدام</button>
+          <span id="pageTaskStatus" class="text-sm text-gray-500"></span>
+        </div>
+      ` : pageEmpty("برای ثبت اقدام ابتدا یک پرونده ایجاد کنید."))}
+      ${pageSection("فهرست اقدامات و مهلت‌ها", `<div class="space-y-3">${taskCards}</div>`)}
+    </div>
+  `;
+}
+
 function renderDedicatedMatters() {
   const list = state.matters.length
     ? state.matters.map((matter) => `
@@ -2579,6 +2664,9 @@ async function handlePageAction(action, button) {
   }
   if (action === "create-matter") return createPageMatter();
   if (action === "delete-matter") return deletePageMatter(button.dataset.matterId);
+  if (action === "create-task") return createPageTask();
+  if (action === "update-task-status") return updatePageTaskStatus(button.dataset.taskId, button.dataset.status);
+  if (action === "delete-task") return deletePageTask(button.dataset.taskId);
 }
 
 async function completeOnboarding() {
@@ -3275,6 +3363,50 @@ async function restoreBackup() {
     state.pageBackup.status = error.message;
     renderDedicatedView("backup");
   }
+}
+
+async function createPageTask() {
+  const status = document.getElementById("pageTaskStatus");
+  const matterId = document.getElementById("pageTaskMatter")?.value || "";
+  const title = document.getElementById("pageTaskTitle")?.value.trim() || "";
+  if (!matterId || !title) {
+    if (status) status.textContent = "پرونده و عنوان اقدام را مشخص کنید.";
+    return;
+  }
+  if (status) status.textContent = "در حال ثبت...";
+  try {
+    const payload = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        matter_id: matterId,
+        title,
+        task_type: document.getElementById("pageTaskType")?.value || "task",
+        due_date: document.getElementById("pageTaskDue")?.value || "",
+        priority: document.getElementById("pageTaskPriority")?.value || "normal",
+        description: document.getElementById("pageTaskDescription")?.value || "",
+      }),
+    });
+    state.tasks = payload.tasks || [];
+    renderDedicatedView("tasks");
+  } catch (error) {
+    if (status) status.textContent = error.message;
+  }
+}
+
+async function updatePageTaskStatus(taskId, status) {
+  const payload = await api(`/api/tasks/${encodeURIComponent(taskId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({status}),
+  });
+  state.tasks = payload.tasks || [];
+  renderDedicatedView("tasks");
+}
+
+async function deletePageTask(taskId) {
+  if (!window.confirm("این اقدام یا مهلت حذف شود؟")) return;
+  const payload = await api(`/api/tasks/${encodeURIComponent(taskId)}`, {method: "DELETE"});
+  state.tasks = payload.tasks || [];
+  renderDedicatedView("tasks");
 }
 
 async function createPageMatter() {
