@@ -3616,6 +3616,43 @@ class LegalMemoryStore:
             return {"error": f"matter not found: {matter_id}"}
 
         documents = self.search_matter_documents(query, matter_id=matter_id, top_k=document_k)
+        if query.strip():
+            # A natural-language question often does not lexically match the
+            # document body (for example, "what is in file test.txt?"). Keep a
+            # separate inventory so a filename mentioned by the user can be
+            # resolved against the original upload metadata.
+            all_document_refs = self.search_matter_documents("", matter_id=matter_id, top_k=100)
+            mentioned_filenames = re.findall(
+                r"(?i)(?<![\\w])[\\w().-]+\\.(?:pdf|docx|txt|md|markdown|csv|json|png|jpg|jpeg|webp|tif|tiff|bmp|gif|heic)(?![\\w])",
+                query,
+            )
+            if mentioned_filenames:
+                requested_names = {Path(name).name.casefold() for name in mentioned_filenames}
+                requested_stems = {Path(name).stem.casefold() for name in mentioned_filenames}
+                matched_documents: list[dict[str, Any]] = []
+                for reference in all_document_refs:
+                    metadata = reference.get("metadata") or {}
+                    candidates = [
+                        str(metadata.get("original_filename") or ""),
+                        str(metadata.get("uploaded_filename") or ""),
+                        str(reference.get("title") or ""),
+                        str(reference.get("source_path") or ""),
+                    ]
+                    candidate_names = {Path(value).name.casefold() for value in candidates if value}
+                    candidate_stems = {Path(value).stem.casefold() for value in candidates if value}
+                    if requested_names.intersection(candidate_names) or requested_stems.intersection(candidate_stems):
+                        full_document = self.get_matter_document(str(reference["id"]), full=True)
+                        if full_document is not None:
+                            matched_documents.append(full_document)
+                # Do not silently substitute an unrelated document when the
+                # user explicitly named a file that is not in this matter.
+                documents = matched_documents[:document_k]
+            elif not documents:
+                # For a matter-level question with no lexical document hit,
+                # retain recent documents as context instead of presenting an
+                # empty fascicolo to the answer engine.
+                documents = all_document_refs[:document_k]
+
         facts = self.search_matter_facts(query, matter_id=matter_id, top_k=fact_k)
         if query and not facts:
             facts = self.search_matter_facts("", matter_id=matter_id, top_k=fact_k)
