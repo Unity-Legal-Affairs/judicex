@@ -4,6 +4,7 @@ import json
 import re
 import textwrap
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .answering import GroundedAnswerEngine
@@ -884,8 +885,6 @@ def _looks_like_document_content_question(question: str) -> bool:
         "متن فایل",
         "متن سند",
         "متن مدرک",
-        "خلاصه فایل",
-        "خلاصه سند",
         "چه نوشته",
         "چی نوشته",
         "بخوان",
@@ -893,8 +892,6 @@ def _looks_like_document_content_question(question: str) -> bool:
         "contents of",
         "read the file",
         "read this document",
-        "summarize the file",
-        "summary of the document",
         "contenuto del file",
         "testo del documento",
         "leggi il documento",
