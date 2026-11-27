@@ -1674,7 +1674,7 @@ class LegalMemoryStore:
         matter_id = matter_id.strip()
         title = title.strip()
         if not matter_id or self.get_matter(matter_id) is None:
-            raise ValueError("فاشیولیو برای این اقدام پیدا نشد.")
+            raise ValueError("پرونده مرتبط با این اقدام پیدا نشد.")
         if not title:
             raise ValueError("عنوان اقدام الزامی است.")
         if due_date:
