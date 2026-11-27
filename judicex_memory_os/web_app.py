@@ -94,6 +94,7 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
     @app.get("/security")
     @app.get("/backup")
     @app.get("/matters")
+    @app.get("/tasks")
     def index() -> str:
         return render_template(
             "index.html",
@@ -114,6 +115,7 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
                 {
                     "health": memory.health(),
                     "matters": memory.list_matters(top_k=100),
+                    "tasks": memory.list_matter_tasks(top_k=200),
                     "areas": memory.list_areas(),
                     "agent_memories": memory.list_agent_memories(top_k=50),
                     "official_bundles": list_official_bundles(memory),
@@ -618,6 +620,52 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
             if not deleted:
                 return _error(f"Fascicolo non eliminato: {matter_id}", status=400)
             return jsonify({"status": "deleted", "matters": memory.list_matters(top_k=100)})
+
+    @app.get("/api/tasks")
+    def api_list_tasks():
+        matter_id = str(request.args.get("matter_id", "")).strip() or None
+        status = str(request.args.get("status", "")).strip() or None
+        with store() as memory:
+            return jsonify({"tasks": memory.list_matter_tasks(matter_id=matter_id, status=status, top_k=200)})
+
+    @app.post("/api/tasks")
+    def api_create_task():
+        payload = _json_payload()
+        matter_id = str(payload.get("matter_id", "")).strip()
+        if not matter_id:
+            return _error("یک پرونده را برای این اقدام انتخاب کنید.", status=400)
+        try:
+            with store() as memory:
+                task = memory.create_matter_task(
+                    matter_id,
+                    str(payload.get("title", "")),
+                    description=str(payload.get("description", "")),
+                    task_type=str(payload.get("task_type", "task")),
+                    due_date=str(payload.get("due_date", "")),
+                    priority=str(payload.get("priority", "normal")),
+                )
+                return jsonify({"task": task, "tasks": memory.list_matter_tasks(top_k=200)}), 201
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+
+    @app.patch("/api/tasks/<path:task_id>")
+    def api_update_task(task_id: str):
+        payload = _json_payload()
+        try:
+            with store() as memory:
+                task = memory.update_matter_task(task_id, **payload)
+                if task is None:
+                    return _error("اقدام یا مهلت موردنظر پیدا نشد.", status=404)
+                return jsonify({"task": task, "tasks": memory.list_matter_tasks(top_k=200)})
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+
+    @app.delete("/api/tasks/<path:task_id>")
+    def api_delete_task(task_id: str):
+        with store() as memory:
+            if not memory.delete_matter_task(task_id):
+                return _error("اقدام یا مهلت موردنظر پیدا نشد.", status=404)
+            return jsonify({"deleted": True, "tasks": memory.list_matter_tasks(top_k=200)})
 
     @app.get("/api/matters/<path:matter_id>/documents")
     def api_list_matter_documents(matter_id: str):
