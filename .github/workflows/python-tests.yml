@@ -26,5 +26,7 @@ jobs:
           node-version: "20"
       - name: Check frontend JavaScript syntax
         run: node --check judicex_memory_os/static/app.js
+      - name: Check Android shell scripts
+        run: bash -n deploy/android/install.sh deploy/android/start.sh deploy/android/backup.sh
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
