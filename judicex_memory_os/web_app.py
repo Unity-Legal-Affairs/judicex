@@ -59,6 +59,9 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
         JUDICEX_LOCAL_PASSWORD=os.getenv("JUDICEX_LOCAL_PASSWORD", "").strip(),
         JUDICEX_LOCAL_PASSWORD_HASH=os.getenv("JUDICEX_LOCAL_PASSWORD_HASH", "").strip(),
         MAX_CONTENT_LENGTH=50 * 1024 * 1024,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=os.getenv("JUDICEX_SESSION_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes"},
     )
 
     def store() -> LegalMemoryStore:
@@ -2624,6 +2627,22 @@ def _restore_backup(db_path: Path, upload: Any) -> dict[str, Any]:
                     with archive.open(name) as source, target.open("wb") as destination:
                         shutil.copyfileobj(source, destination)
     return {"status": "restored", "db": str(db_path)}
+
+
+def create_server_app() -> Flask:
+    """Production WSGI factory; configuration is supplied through environment variables."""
+    db_path = os.getenv("JUDICEX_DB_PATH", "/var/lib/rahimi-assistant/rahimi.db").strip()
+    secret_key = os.getenv("JUDICEX_SECRET_KEY", "").strip()
+    if len(secret_key) < 32:
+        raise RuntimeError("JUDICEX_SECRET_KEY must be set to a random value of at least 32 characters.")
+    app = create_app(
+        db_path=db_path,
+        default_model=os.getenv("JUDICEX_MODEL", "").strip(),
+        default_area=os.getenv("JUDICEX_DEFAULT_AREA", "iran").strip() or "iran",
+        ollama_host=os.getenv("JUDICEX_OLLAMA_HOST", "http://127.0.0.1:11434").strip(),
+    )
+    app.secret_key = secret_key
+    return app
 
 
 def build_parser() -> argparse.ArgumentParser:
