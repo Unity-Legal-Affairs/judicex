@@ -59,6 +59,11 @@ class JudicexAgentRuntime:
 
     def answer(self, question: str, *, recent_user_turns: list[str] | None = None) -> dict[str, Any]:
         recent_turns = recent_user_turns or []
+        document_read = self._read_matter_document_if_requested(question)
+        if document_read is not None:
+            result, outcome = document_read
+            return self._finalise(result, tool_outcomes={"matter.document_read": outcome})
+
         plan = self._plan(question, recent_turns)
         self._emit(
             "agent_plan",
@@ -115,6 +120,151 @@ class JudicexAgentRuntime:
 
         fallback = self._deterministic_operational_result(question, plan, legal_result=None, outcomes=outcomes)
         return self._finalise(fallback, tool_outcomes=outcomes)
+
+
+    def _read_matter_document_if_requested(
+        self,
+        question: str,
+    ) -> tuple[dict[str, Any], ToolOutcome] | None:
+        """Read an explicitly requested private matter document without relying on LLM routing."""
+        if not self.matter_id or not _looks_like_document_content_question(question):
+            return None
+
+        self._emit(
+            "matter_document_read",
+            "خواندن سند پرونده",
+            "running",
+            "سند در پرونده فعال جست‌وجو و متن ذخیره‌شده آن بازیابی می‌شود.",
+        )
+        try:
+            references = self.store.search_matter_documents(
+                "", matter_id=self.matter_id, top_k=100
+            )
+            mentioned_names = _mentioned_document_filenames(question)
+            selected: list[dict[str, Any]] = []
+
+            if mentioned_names:
+                requested_names = {Path(name).name.casefold() for name in mentioned_names}
+                requested_stems = {Path(name).stem.casefold() for name in mentioned_names}
+                for reference in references:
+                    metadata = reference.get("metadata") or {}
+                    candidates = [
+                        str(metadata.get("original_filename") or ""),
+                        str(metadata.get("uploaded_filename") or ""),
+                        str(reference.get("title") or ""),
+                        str(reference.get("source_path") or ""),
+                    ]
+                    candidate_names = {
+                        Path(value).name.casefold() for value in candidates if value
+                    }
+                    candidate_stems = {
+                        Path(value).stem.casefold() for value in candidates if value
+                    }
+                    if requested_names.intersection(candidate_names) or requested_stems.intersection(candidate_stems):
+                        selected.append(reference)
+            elif len(references) == 1:
+                selected = references[:1]
+            elif len(references) > 1:
+                available = [_matter_document_display_name(item) for item in references[:15]]
+                answer = (
+                    "در این پرونده چند سند وجود دارد. نام فایل موردنظر را در سؤال بنویسید تا همان سند خوانده شود.\n"
+                    + "\n".join(f"• {name}" for name in available)
+                )
+                self._emit(
+                    "matter_document_read",
+                    "خواندن سند پرونده",
+                    "limited",
+                    f"برای انتخاب سند، نام فایل لازم است؛ {len(references)} سند در پرونده موجود است.",
+                )
+                result = _document_read_result(answer, self.store.get_matter(self.matter_id))
+                return result, ToolOutcome(
+                    "matter.document_read",
+                    "limited",
+                    "نام فایل برای انتخاب میان چند سند لازم است.",
+                    {"available_documents": available},
+                )
+
+            if not selected:
+                requested = "، ".join(mentioned_names) if mentioned_names else "سند"
+                available = [_matter_document_display_name(item) for item in references[:15]]
+                answer = f"فایل «{requested}» در پرونده فعال پیدا نشد."
+                if available:
+                    answer += "\nاسناد ثبت‌شده در پرونده: " + "، ".join(available)
+                self._emit(
+                    "matter_document_read",
+                    "خواندن سند پرونده",
+                    "limited",
+                    f"سند درخواستی پیدا نشد: {requested}",
+                )
+                return _document_read_result(answer, self.store.get_matter(self.matter_id)), ToolOutcome(
+                    "matter.document_read",
+                    "limited",
+                    "سند درخواستی در پرونده پیدا نشد.",
+                    {"requested_documents": mentioned_names, "available_documents": available},
+                )
+
+            full_documents = [
+                self.store.get_matter_document(str(item["id"]), full=True)
+                for item in selected[:5]
+            ]
+            full_documents = [item for item in full_documents if item is not None]
+            if not full_documents:
+                raise RuntimeError("متن کامل سند از پایگاه داده پرونده بازیابی نشد.")
+
+            parts: list[str] = []
+            read_names: list[str] = []
+            for document in full_documents:
+                metadata = document.get("metadata") or {}
+                filename = _matter_document_display_name(document)
+                read_names.append(filename)
+                extraction = str(metadata.get("text_extraction") or "")
+                if extraction in {"no_extractable_text", "not_applicable_without_ocr"}:
+                    parts.append(
+                        f"فایل: {filename}\n"
+                        "فایل در پرونده ثبت شده، اما متن قابل استخراج ندارد و هنوز OCR روی آن انجام نشده است."
+                    )
+                    continue
+                extracted_text = str(document.get("content") or "").strip()
+                if not extracted_text:
+                    parts.append(f"فایل: {filename}\nمتن قابل خواندن در پایگاه داده موجود نیست.")
+                    continue
+                max_chars = 20000
+                clipped = len(extracted_text) > max_chars
+                displayed_text = extracted_text[:max_chars]
+                parts.append(
+                    f"فایل: {filename}\n"
+                    f"{displayed_text}"
+                    + (
+                        "\n\n[نمایش متن به ۲۰٬۰۰۰ نویسه اول محدود شده است؛ فایل اصلی تغییر نکرده است.]"
+                        if clipped
+                        else ""
+                    )
+                )
+
+            answer = "متن استخراج‌شده از اسناد انتخاب‌شده:\n\n" + "\n\n---\n\n".join(parts)
+            self._emit(
+                "matter_document_read",
+                "خواندن سند پرونده",
+                "completed",
+                f"متن {len(full_documents)} سند از پایگاه داده پرونده بازیابی شد.",
+                metrics={"documents_read": len(full_documents)},
+            )
+            outcome = ToolOutcome(
+                "matter.document_read",
+                "completed",
+                f"متن {len(full_documents)} سند بازیابی شد.",
+                {"document_names": read_names, "documents_read": len(full_documents)},
+            )
+            return _document_read_result(answer, self.store.get_matter(self.matter_id)), outcome
+        except Exception as exc:
+            detail = f"خواندن سند پرونده ناموفق بود: {exc}"
+            self._emit("matter_document_read", "خواندن سند پرونده", "failed", detail)
+            result = _document_read_result(
+                "خواندن سند انجام نشد. خطای فنی: " + str(exc),
+                self.store.get_matter(self.matter_id),
+                status="limited",
+            )
+            return result, ToolOutcome("matter.document_read", "failed", detail, {"error": str(exc)})
 
     # ------------------------------------------------------------------
     # Planning
@@ -714,6 +864,78 @@ class JudicexAgentRuntime:
         readable = [labels.get(action, action) for action in plan.actions]
         return "Percorso reale: " + ", ".join(readable)
 
+
+
+
+_DOCUMENT_FILENAME_RE = re.compile(
+    r"(?i)(?<![\w])[\w().-]+\.(?:pdf|docx|txt|md|markdown|csv|json|png|jpg|jpeg|webp|tif|tiff|bmp|gif|heic)(?![\w])"
+)
+
+
+def _mentioned_document_filenames(question: str) -> list[str]:
+    return list(dict.fromkeys(_DOCUMENT_FILENAME_RE.findall(question)))
+
+
+def _looks_like_document_content_question(question: str) -> bool:
+    text = question.casefold()
+    markers = (
+        "محتوا",
+        "محتویات",
+        "متن فایل",
+        "متن سند",
+        "متن مدرک",
+        "خلاصه فایل",
+        "خلاصه سند",
+        "چه نوشته",
+        "چی نوشته",
+        "بخوان",
+        "content of",
+        "contents of",
+        "read the file",
+        "read this document",
+        "summarize the file",
+        "summary of the document",
+        "contenuto del file",
+        "testo del documento",
+        "leggi il documento",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _matter_document_display_name(document: dict[str, Any]) -> str:
+    metadata = document.get("metadata") or {}
+    filename = (
+        metadata.get("original_filename")
+        or metadata.get("uploaded_filename")
+        or Path(str(document.get("source_path") or "")).name
+        or document.get("title")
+        or "سند بدون نام"
+    )
+    return str(filename)
+
+
+def _document_read_result(
+    answer: str,
+    matter: dict[str, Any] | None,
+    *,
+    status: str = "operational",
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "answer": answer,
+        "citations": [],
+        "sections": [],
+        "case_facts": [],
+        "limits": [],
+        "follow_up_questions": [],
+        "coverage": {},
+        "matter": matter,
+        "matter_coverage": {},
+        "answer_contract": {"status": "skipped", "reason": "private_document_read"},
+        "semantic_verifier": {"status": "skipped", "reason": "private_document_read"},
+        "evidence_trace": [],
+        "legal_issues": [],
+    }
 
 def _extract_json(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
