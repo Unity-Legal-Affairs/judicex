@@ -26,12 +26,6 @@ Termux را باز کنید و دستور زیر را عیناً وارد کنی
 pkg update -y && pkg upgrade -y
 pkg install -y git python clang make pkg-config libjpeg-turbo libpng freetype libwebp zlib openssl libffi rust
 git clone --branch Iran-legal --single-branch https://github.com/mohamadrezarahimi2000/judicex.git
-cd jud icex
-```
-
-اگر دستور آخر به‌دلیل فاصله اشتباه کپی شد، دستور صحیح آن این است:
-
-```bash
 cd ~/judicex
 ```
 
