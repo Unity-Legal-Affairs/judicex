@@ -29,9 +29,6 @@ crypto = [
 test = [
     "playwright>=1.50,<2",
 ]
-ocr = [
-    "PyMuPDF>=1.24,<2",
-]
 
 [project.scripts]
 judicex = "judicex_memory_os.cli:main"
