@@ -54,7 +54,8 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
         JUDICEX_DEFAULT_MODEL=default_model,
         JUDICEX_DEFAULT_AREA=default_area,
         JUDICEX_OLLAMA_HOST=ollama_host,
-        JUDICEX_OCR_MODEL=os.getenv("JUDICEX_OCR_MODEL", "glm-5:cloud").strip() or "glm-5:cloud",
+        # OCR is local-only by default; cloud OCR is deliberately not invoked.
+        JUDICEX_OCR_MODEL="",
         JUDICEX_OCR_MAX_PDF_PAGES=_safe_positive_int(os.getenv("JUDICEX_OCR_MAX_PDF_PAGES", "20"), default=20),
         JUDICEX_LOCAL_PASSWORD=os.getenv("JUDICEX_LOCAL_PASSWORD", "").strip(),
         JUDICEX_LOCAL_PASSWORD_HASH=os.getenv("JUDICEX_LOCAL_PASSWORD_HASH", "").strip(),
@@ -917,8 +918,6 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
             ocr = _extract_ocr_text(
                 document,
                 source_path,
-                ollama_host=app.config["JUDICEX_OLLAMA_HOST"],
-                ocr_model=app.config["JUDICEX_OCR_MODEL"],
                 max_pdf_pages=app.config["JUDICEX_OCR_MAX_PDF_PAGES"],
             )
             if ocr.get("text") and payload.get("apply", True):
@@ -2057,158 +2056,135 @@ def _extract_ocr_text(
     document: dict[str, Any],
     source_path: Path | None,
     *,
-    ollama_host: str,
-    ocr_model: str = "glm-5:cloud",
     max_pdf_pages: int = 20,
 ) -> dict[str, Any]:
+    """Extract document text without sending files to a remote service."""
     if source_path is None:
         return {"status": "no_source_file", "text": document.get("content", ""), "engine": "stored_text"}
+
     suffix = source_path.suffix.lower()
     if suffix == ".pdf":
-        text_chunks: list[str] = []
         try:
             from pypdf import PdfReader
 
             reader = PdfReader(str(source_path))
-            for page in reader.pages:
-                text_chunks.append(page.extract_text() or "")
-            text = "\n\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
-            if text.strip():
+            text_chunks = [(page.extract_text() or "").strip() for page in reader.pages]
+            text = "\n\n".join(chunk for chunk in text_chunks if chunk)
+            if text:
                 return {"status": "extracted", "text": text, "engine": "pypdf", "pages": len(reader.pages)}
-            return _ocr_pdf_with_ollama(source_path, ollama_host=ollama_host, model=ocr_model, max_pages=max_pdf_pages, page_count=len(reader.pages))
+            return _ocr_pdf_with_tesseract(source_path, max_pages=max_pdf_pages, page_count=len(reader.pages))
         except Exception as exc:
             return {"status": "error", "text": "", "engine": "pypdf", "error": str(exc)}
+
     if suffix in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
-        ollama_result = _ocr_image_file_with_ollama(source_path, ollama_host=ollama_host, model=ocr_model)
-        if ollama_result.get("text"):
-            return ollama_result
-        tesseract_result = _ocr_image_with_tesseract(source_path)
-        if tesseract_result.get("text"):
-            tesseract_result["fallback_from"] = {k: v for k, v in ollama_result.items() if k != "text"}
-            return tesseract_result
-        if ollama_result.get("status") != "ocr_done":
-            return ollama_result
-        return tesseract_result
+        return _ocr_image_with_tesseract(source_path)
+
     return {"status": "unsupported_format", "text": document.get("content", ""), "engine": "stored_text"}
 
 
-def _ocr_pdf_with_ollama(source_path: Path, *, ollama_host: str, model: str, max_pages: int, page_count: int) -> dict[str, Any]:
-    try:
-        import fitz  # type: ignore
-    except ModuleNotFoundError:
-        return {
-            "status": "scanned_pdf_no_text",
-            "text": "",
-            "engine": "ollama",
-            "model": model,
-            "pages": page_count,
-            "note": "PDF senza testo incorporato. Per leggerlo con glm-5:cloud installa l'extra OCR, poi riprova.",
-        }
-    try:
-        pdf = fitz.open(str(source_path))
-    except Exception as exc:
-        return {"status": "error", "text": "", "engine": "ollama", "model": model, "error": str(exc)}
-
-    page_texts: list[str] = []
-    errors: list[str] = []
-    total_pages = len(pdf)
-    if total_pages < 1:
-        pdf.close()
-        return {"status": "ocr_empty", "text": "", "engine": "ollama", "model": model, "pages": 0, "note": "PDF senza pagine leggibili."}
-    limit = max(1, min(_safe_positive_int(max_pages, default=20), total_pages))
-    try:
-        for index in range(limit):
-            page = pdf.load_page(index)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            result = _ocr_image_bytes_with_ollama(
-                pixmap.tobytes("png"),
-                ollama_host=ollama_host,
-                model=model,
-                label=f"pagina {index + 1}",
-            )
-            if result.get("text"):
-                page_texts.append(f"[Pagina {index + 1}]\n{result['text']}")
-            elif result.get("error") or result.get("note"):
-                errors.append(str(result.get("error") or result.get("note")))
-    finally:
-        pdf.close()
-
-    text = "\n\n".join(page_texts).strip()
-    if text:
-        payload: dict[str, Any] = {"status": "ocr_done", "text": text, "engine": "ollama", "model": model, "pages": page_count, "processed_pages": limit}
-        if limit < page_count:
-            payload["note"] = f"OCR applicato alle prime {limit} pagine su {page_count}. Aumenta JUDICEX_OCR_MAX_PDF_PAGES per elaborarne di più."
-        return payload
-    return {
-        "status": "ocr_empty",
-        "text": "",
-        "engine": "ollama",
-        "model": model,
-        "pages": page_count,
-        "processed_pages": limit,
-        "note": errors[0] if errors else "glm-5:cloud non ha restituito testo leggibile.",
-    }
-
-
-def _ocr_image_file_with_ollama(source_path: Path, *, ollama_host: str, model: str) -> dict[str, Any]:
-    try:
-        return _ocr_image_bytes_with_ollama(source_path.read_bytes(), ollama_host=ollama_host, model=model, label=source_path.name)
-    except OSError as exc:
-        return {"status": "error", "text": "", "engine": "ollama", "model": model, "error": str(exc)}
-
-
-def _ocr_image_bytes_with_ollama(image_bytes: bytes, *, ollama_host: str, model: str, label: str = "immagine") -> dict[str, Any]:
-    prompt = (
-        "Trascrivi fedelmente tutto il testo visibile in questa immagine. "
-        "Mantieni righe, numeri, date, importi, nomi e punteggiatura. "
-        "Non riassumere, non commentare, non aggiungere spiegazioni. "
-        "Se una parola non e leggibile usa [illeggibile]. Restituisci solo la trascrizione."
-    )
-    image_b64 = base64.b64encode(image_bytes).decode("ascii")
-    try:
-        from .ollama_agent import OllamaClient
-
-        client = OllamaClient(host=ollama_host, timeout=600)
-        text = client.chat(
-            model=model,
-            messages=[{"role": "user", "content": prompt, "images": [image_b64]}],
-            temperature=0,
-        )
-    except Exception as exc:
-        return {
-            "status": "ocr_engine_missing",
-            "text": "",
-            "engine": "ollama",
-            "model": model,
-            "error": str(exc),
-            "note": f"Avvia Ollama e rendi disponibile il modello {model} per usare OCR AI.",
-        }
-    clean_text = _clean_ocr_output(text)
-    return {"status": "ocr_done", "text": clean_text, "engine": "ollama", "model": model, "source": label}
-
-
-def _ocr_image_with_tesseract(source_path: Path) -> dict[str, Any]:
-    tesseract = shutil.which("tesseract")
-    if not tesseract:
-        return {
-            "status": "ocr_engine_missing",
-            "text": "",
-            "engine": "tesseract",
-            "note": "Tesseract non è installato nel sistema.",
-        }
+def _tesseract_languages(tesseract: str) -> tuple[str | None, str | None]:
     try:
         proc = subprocess.run(
-            [tesseract, str(source_path), "stdout", "-l", "ita+eng"],
+            [tesseract, "--list-langs"],
             check=False,
             capture_output=True,
             text=True,
+            timeout=20,
+        )
+    except Exception as exc:
+        return None, str(exc)
+    if proc.returncode != 0:
+        return None, proc.stderr.strip() or "امکان خواندن زبان‌های نصب‌شده Tesseract وجود ندارد."
+    available = {line.strip() for line in proc.stdout.splitlines()[1:] if line.strip()}
+    if "fas" not in available:
+        return None, "داده زبان فارسی (fas) نصب نیست؛ OCR فارسی اجرا نشد."
+    languages = ["fas"]
+    if "eng" in available:
+        languages.append("eng")
+    return "+".join(languages), None
+
+
+def _ocr_image_bytes_with_tesseract(image_bytes: bytes, *, label: str = "image") -> dict[str, Any]:
+    tesseract = shutil.which("tesseract")
+    if not tesseract:
+        return {"status": "ocr_engine_missing", "text": "", "engine": "tesseract", "note": "Tesseract نصب نیست."}
+    languages, language_error = _tesseract_languages(tesseract)
+    if not languages:
+        return {"status": "ocr_language_missing", "text": "", "engine": "tesseract", "note": language_error}
+    try:
+        proc = subprocess.run(
+            [tesseract, "stdin", "stdout", "-l", languages],
+            input=image_bytes,
+            check=False,
+            capture_output=True,
             timeout=120,
         )
     except Exception as exc:
         return {"status": "error", "text": "", "engine": "tesseract", "error": str(exc)}
     if proc.returncode != 0:
-        return {"status": "error", "text": "", "engine": "tesseract", "error": proc.stderr.strip()}
-    return {"status": "ocr_done", "text": proc.stdout.strip(), "engine": "tesseract"}
+        return {"status": "error", "text": "", "engine": "tesseract", "error": proc.stderr.decode("utf-8", "replace").strip()}
+    text = proc.stdout.decode("utf-8", "replace").strip()
+    return {"status": "ocr_done" if text else "ocr_empty", "text": text, "engine": "tesseract", "languages": languages, "source": label}
+
+
+def _ocr_image_with_tesseract(source_path: Path) -> dict[str, Any]:
+    try:
+        return _ocr_image_bytes_with_tesseract(source_path.read_bytes(), label=source_path.name)
+    except OSError as exc:
+        return {"status": "error", "text": "", "engine": "tesseract", "error": str(exc)}
+
+
+def _ocr_pdf_with_tesseract(
+    source_path: Path,
+    *,
+    max_pages: int,
+    page_count: int,
+) -> dict[str, Any]:
+    try:
+        import fitz  # type: ignore
+    except ModuleNotFoundError:
+        return {
+            "status": "ocr_dependency_missing",
+            "text": "",
+            "engine": "tesseract",
+            "pages": page_count,
+            "note": "برای OCR محلی PDF اسکن‌شده، وابستگی PyMuPDF (fitz) باید نصب شود. هیچ داده‌ای ارسال نشده است.",
+        }
+    try:
+        pdf = fitz.open(str(source_path))
+    except Exception as exc:
+        return {"status": "error", "text": "", "engine": "tesseract", "error": str(exc)}
+
+    page_texts: list[str] = []
+    total_pages = len(pdf)
+    limit = max(1, min(_safe_positive_int(max_pages, default=20), total_pages))
+    try:
+        for index in range(limit):
+            page = pdf.load_page(index)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            result = _ocr_image_bytes_with_tesseract(
+                pixmap.tobytes("png"),
+                label=f"page {index + 1}",
+            )
+            if result.get("text"):
+                page_texts.append(f"[صفحه {index + 1}]\n{result['text']}")
+            elif result.get("status") not in {"ocr_empty"}:
+                return {**result, "pages": page_count, "processed_pages": index + 1}
+    finally:
+        pdf.close()
+
+    text = "\n\n".join(page_texts).strip()
+    result: dict[str, Any] = {
+        "status": "ocr_done" if text else "ocr_empty",
+        "text": text,
+        "engine": "tesseract",
+        "pages": page_count,
+        "processed_pages": limit,
+        "languages": "fas+eng",
+    }
+    if limit < page_count:
+        result["note"] = f"فقط {limit} صفحه از {page_count} صفحه پردازش شد."
+    return result
 
 
 def _clean_ocr_output(text: str) -> str:
