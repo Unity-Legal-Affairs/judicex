@@ -131,11 +131,10 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
         relative_dir = str(request.args.get("directory", "ALL_COMMON")).strip() or "ALL_COMMON"
         try:
             root = _device_shared_root()
-            if relative_dir.upper() == "ALL_COMMON":
-                scan_roots = [root / name for name in ("Download", "Documents", "DCIM", "Pictures", "Telegram")]
-                scan_roots = [item for item in scan_roots if item.is_dir() and not item.is_symlink()]
-                if not scan_roots:
-                    return _error("هیچ‌یک از پوشه‌های اصلی حافظه در دسترس نیست.", status=400)
+            if relative_dir.upper() in {"ALL_COMMON", "ALL_STORAGE", "*"}:
+                # Scan all shared-storage folders visible to Termux.
+                # Android may restrict protected subtrees such as Android/data and Android/obb.
+                scan_roots = [root]
             else:
                 base = _device_safe_path(relative_dir)
                 if not base.is_dir():
@@ -152,7 +151,7 @@ def create_app(*, db_path: str | Path, default_model: str = "", default_area: st
                         depth = len(current_path.relative_to(base).parts)
                     except ValueError:
                         continue
-                    if depth >= 5:
+                    if depth >= 8:
                         dirs[:] = []
                     for name in files:
                         file_path = current_path / name
