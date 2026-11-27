@@ -2140,44 +2140,94 @@ def _ocr_pdf_with_tesseract(
     max_pages: int,
     page_count: int,
 ) -> dict[str, Any]:
-    try:
-        import fitz  # type: ignore
-    except ModuleNotFoundError:
+    """Render scanned PDF pages with Poppler and OCR them locally with Tesseract."""
+    renderer = shutil.which("pdftoppm")
+    if not renderer:
         return {
-            "status": "ocr_dependency_missing",
+            "status": "ocr_engine_missing",
             "text": "",
             "engine": "tesseract",
             "pages": page_count,
-            "note": "برای OCR محلی PDF اسکن‌شده، وابستگی PyMuPDF (fitz) باید نصب شود. هیچ داده‌ای ارسال نشده است.",
+            "note": "ابزار pdftoppm از بسته Poppler نصب نیست. هیچ داده‌ای ارسال نشده است.",
         }
-    try:
-        pdf = fitz.open(str(source_path))
-    except Exception as exc:
-        return {"status": "error", "text": "", "engine": "tesseract", "error": str(exc)}
 
     page_texts: list[str] = []
-    total_pages = len(pdf)
-    limit = max(1, min(_safe_positive_int(max_pages, default=20), total_pages))
+    limit = max(1, min(_safe_positive_int(max_pages, default=20), page_count))
     try:
-        for index in range(limit):
-            page = pdf.load_page(index)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            result = _ocr_image_bytes_with_tesseract(
-                pixmap.tobytes("png"),
-                label=f"page {index + 1}",
-            )
-            if result.get("text"):
-                page_texts.append(f"[صفحه {index + 1}]\n{result['text']}")
-            elif result.get("status") not in {"ocr_empty"}:
-                return {**result, "pages": page_count, "processed_pages": index + 1}
-    finally:
-        pdf.close()
+        with tempfile.TemporaryDirectory(prefix="judicex_ocr_") as temp_dir:
+            for index in range(limit):
+                output_prefix = Path(temp_dir) / f"page_{index + 1}"
+                try:
+                    proc = subprocess.run(
+                        [
+                            renderer,
+                            "-f", str(index + 1),
+                            "-l", str(index + 1),
+                            "-r", "200",
+                            "-singlefile",
+                            "-png",
+                            str(source_path),
+                            str(output_prefix),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        timeout=120,
+                    )
+                except subprocess.TimeoutExpired:
+                    return {
+                        "status": "error",
+                        "text": "\\n\\n".join(page_texts),
+                        "engine": "tesseract",
+                        "pages": page_count,
+                        "processed_pages": index,
+                        "error": f"تبدیل صفحه {index + 1} بیش از حد طول کشید.",
+                    }
+                if proc.returncode != 0:
+                    detail = proc.stderr.decode("utf-8", "replace").strip()
+                    return {
+                        "status": "error",
+                        "text": "\\n\\n".join(page_texts),
+                        "engine": "poppler+tesseract",
+                        "pages": page_count,
+                        "processed_pages": index,
+                        "error": detail or f"تبدیل صفحه {index + 1} به تصویر ناموفق بود.",
+                    }
 
-    text = "\n\n".join(page_texts).strip()
+                image_path = output_prefix.with_suffix(".png")
+                if not image_path.is_file():
+                    return {
+                        "status": "error",
+                        "text": "\\n\\n".join(page_texts),
+                        "engine": "poppler+tesseract",
+                        "pages": page_count,
+                        "processed_pages": index,
+                        "error": f"تصویر صفحه {index + 1} ساخته نشد.",
+                    }
+
+                result = _ocr_image_with_tesseract(image_path)
+                if result.get("text"):
+                    page_texts.append(f"[صفحه {index + 1}]\\n{result['text']}")
+                elif result.get("status") != "ocr_empty":
+                    return {
+                        **result,
+                        "pages": page_count,
+                        "processed_pages": index + 1,
+                        "text": "\\n\\n".join(page_texts),
+                    }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "text": "\\n\\n".join(page_texts),
+            "engine": "poppler+tesseract",
+            "pages": page_count,
+            "error": str(exc),
+        }
+
+    text = "\\n\\n".join(page_texts).strip()
     result: dict[str, Any] = {
         "status": "ocr_done" if text else "ocr_empty",
         "text": text,
-        "engine": "tesseract",
+        "engine": "poppler+tesseract",
         "pages": page_count,
         "processed_pages": limit,
         "languages": "fas+eng",
@@ -2185,7 +2235,6 @@ def _ocr_pdf_with_tesseract(
     if limit < page_count:
         result["note"] = f"فقط {limit} صفحه از {page_count} صفحه پردازش شد."
     return result
-
 
 def _clean_ocr_output(text: str) -> str:
     value = str(text or "").strip()
