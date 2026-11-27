@@ -26,7 +26,7 @@ class WebAppTests(unittest.TestCase):
         index = client.get("/")
         self.assertEqual(index.status_code, 200)
         self.assertIn(b"Judicex", index.data)
-        for path in ("/chat", "/onboarding", "/search", "/dashboard", "/documents", "/workflows", "/tables", "/drafts", "/tools", "/settings", "/provider-ai", "/memory", "/sources", "/security", "/backup"):
+        for path in ("/chat", "/onboarding", "/search", "/dashboard", "/documents", "/workflows", "/tables", "/drafts", "/tools", "/settings", "/provider-ai", "/memory", "/sources", "/security", "/backup", "/tasks"):
             self.assertEqual(client.get(path).status_code, 200)
         auth_status = client.get("/api/auth/status")
         self.assertEqual(auth_status.status_code, 200)
@@ -72,6 +72,30 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200)
         matter_id = created.get_json()["matter"]["id"]
+        task = client.post(
+            "/api/tasks",
+            json={
+                "matter_id": matter_id,
+                "title": "ثبت لایحه",
+                "task_type": "deadline",
+                "due_date": "2026-12-15",
+                "priority": "urgent",
+            },
+        )
+        self.assertEqual(task.status_code, 201)
+        task_id = task.get_json()["task"]["id"]
+        self.assertEqual(task.get_json()["task"]["matter_title"], "Recupero credito Beta")
+        self.assertEqual(len(client.get(f"/api/tasks?matter_id={matter_id}").get_json()["tasks"]), 1)
+        invalid_task = client.post(
+            "/api/tasks",
+            json={"matter_id": matter_id, "title": "تاریخ نامعتبر", "due_date": "15/12/2026"},
+        )
+        self.assertEqual(invalid_task.status_code, 400)
+        updated_task = client.patch(f"/api/tasks/{task_id}", json={"status": "done"})
+        self.assertEqual(updated_task.status_code, 200)
+        self.assertEqual(updated_task.get_json()["task"]["status"], "done")
+        self.assertTrue(updated_task.get_json()["task"]["completed_at"])
+        self.assertEqual(client.delete(f"/api/tasks/{task_id}").status_code, 200)
 
         chat = client.post("/api/chat-sessions", json={"title": "Chat test", "matter_id": matter_id})
         self.assertEqual(chat.status_code, 200)
