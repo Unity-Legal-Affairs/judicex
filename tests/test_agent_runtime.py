@@ -46,6 +46,34 @@ class JudicexAgentRuntimeTests(unittest.TestCase):
         self.assertIn("Tool: composizione risposta", trace_titles)
         self.assertEqual([step["id"] for step in emitted], [step["id"] for step in result["agent_trace"]])
 
+    def test_reads_requested_private_document_without_calling_the_llm(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        store = LegalMemoryStore(Path(tempdir.name) / "memory.db")
+        self.addCleanup(store.close)
+        matter = store.create_matter("پرونده آزمایشی", area="کیفری")
+        expected_text = "این یک متن آزمایشی است و فقط برای آزمون خواندن سند ذخیره شده است."
+        store.add_matter_document(
+            matter["id"],
+            title="test",
+            kind="document",
+            content=expected_text,
+            metadata={"original_filename": "test.txt", "text_extraction": "plain_text"},
+        )
+        runtime = JudicexAgentRuntime(
+            store=store,
+            client=RaisingClient(),
+            model="fake",
+            matter_id=matter["id"],
+        )
+
+        result = runtime.answer("محتوای فایل test.txt چیست؟")
+
+        self.assertEqual(result["status"], "operational")
+        self.assertIn(expected_text, result["answer"])
+        self.assertEqual(result["tool_results"]["matter.document_read"]["status"], "completed")
+        self.assertEqual(result["agent_trace"][0]["id"], "matter_document_read")
+
     def test_agent_memory_is_separate_from_legal_sources_and_available_to_runtime(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
